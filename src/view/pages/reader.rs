@@ -134,7 +134,8 @@ where
 
         let index = self.current_page_index();
         let show_reload = if let Some(page) = self.pages.get_mut(index).filter(|page| page.image_state.is_some()) {
-            let image = StatefulImage::new(None).resize(Resize::Fit(None));
+            let filter = MangaTuiConfig::get().image_resize_filter.to_filter_type();
+            let image = StatefulImage::new(None).resize(Resize::Fit(Some(filter)));
             StatefulWidget::render(image, center, buf, page.image_state.as_mut().unwrap());
             let (width, height) = page.dimensions.unwrap();
             self.resize_based_on_image_size(width, height);

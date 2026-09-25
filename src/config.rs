@@ -279,6 +279,27 @@ impl ConfigParam for DefaultLanguageParam {
 }
 
 #[derive(Debug, Default)]
+struct ImageResizeFilterParam;
+
+impl ConfigParam for ImageResizeFilterParam {
+    fn name(&self) -> &'static str {
+        "image_resize_filter"
+    }
+
+    fn comments(&self) -> &'static str {
+        "Filter used to resize manga pages in the reader.\n# lanczos3 gives the best quality for text and fine lines (recommended for manga).\n# nearest is the fastest but lowest quality (pixel-art style)."
+    }
+
+    fn values(&self) -> &'static str {
+        "lanczos3, catmull_rom, triangle, nearest"
+    }
+
+    fn defaults(&self) -> &'static str {
+        r#""lanczos3""#
+    }
+}
+
+#[derive(Debug, Default)]
 struct AnilistClientId;
 
 impl ConfigParam for AnilistClientId {
@@ -351,6 +372,7 @@ fn config_params() -> Vec<Box<dyn ConfigParam>> {
     vec![
         Box::new(DownloadTypeParam),
         Box::new(ImageQualityParam),
+        Box::new(ImageResizeFilterParam),
         Box::new(AmountPagesParam),
         Box::new(AutoBookmarkParam),
         Box::new(TrackReadingWhenDownload),
@@ -560,6 +582,10 @@ pub struct MangaTuiConfig {
     pub download_type: DownloadType,
     /// The image quality for downloads.
     pub image_quality: ImageQuality,
+    /// The filter used to resize manga pages in the reader.
+    /// Lanczos3 is the default and gives the best quality for text and fine lines.
+    #[serde(default)]
+    pub image_resize_filter: ImageResizeFilter,
     /// Whether to automatically bookmark chapters.
     pub auto_bookmark: bool,
     /// Number of pages to prefetch around the current page.
@@ -599,6 +625,41 @@ pub enum ImageQuality {
     High,
 }
 
+/// Filter used when resizing manga page images in the reader.
+///
+/// Lanczos3 produces the sharpest result for manga text and fine lines.
+/// Nearest is the fastest but lowest quality (pixel-art style).
+#[derive(Debug, Serialize, Deserialize, Display, EnumIter, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageResizeFilter {
+    /// Best quality for manga – preserves text and fine lines (default)
+    Lanczos3,
+    /// Good quality, smooth results
+    CatmullRom,
+    /// Decent quality, bilinear interpolation
+    Triangle,
+    /// Worst quality but fastest (original default)
+    Nearest,
+}
+
+impl Default for ImageResizeFilter {
+    fn default() -> Self {
+        Self::Lanczos3
+    }
+}
+
+impl ImageResizeFilter {
+    /// Converts to the `image::imageops::FilterType` used by `ratatui-image`.
+    pub fn to_filter_type(self) -> ratatui_image::FilterType {
+        match self {
+            Self::Lanczos3 => ratatui_image::FilterType::Lanczos3,
+            Self::CatmullRom => ratatui_image::FilterType::CatmullRom,
+            Self::Triangle => ratatui_image::FilterType::Triangle,
+            Self::Nearest => ratatui_image::FilterType::Nearest,
+        }
+    }
+}
+
 impl Default for MangaTuiConfig {
     fn default() -> Self {
         Self {
@@ -607,6 +668,7 @@ impl Default for MangaTuiConfig {
             check_new_updates: true,
             download_type: DownloadType::default(),
             image_quality: ImageQuality::default(),
+            image_resize_filter: ImageResizeFilter::default(),
             track_reading_when_download: false,
             track_reading_history: true,
             default_manga_provider: MangaProviders::default(),
