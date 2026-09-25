@@ -651,7 +651,7 @@ impl MangaPageProvider for MangadexClient {
             super::ChapterOrderBy::Descending => "desc",
         };
 
-        let id_cache = format!("{endpoint}{offset}{order}get-chapters-cache");
+        let id_cache = format!("{endpoint}{offset}{order}{}-get-chapters-cache", filters.language.as_iso_code());
 
         let cache = self.cache_provider.get(&id_cache)?;
 
@@ -722,7 +722,7 @@ impl MangaPageProvider for MangadexClient {
 
         let endpoint = format!("{}/manga/{manga_id}/feed", self.api_url_base);
 
-        let id_cache = format!("{endpoint}get-all-chapters");
+        let id_cache = format!("{endpoint}{language}-get-all-chapters");
         let cache = self.cache_provider.get(&id_cache)?;
 
         match cache {
