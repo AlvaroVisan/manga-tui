@@ -246,10 +246,20 @@ On linux it will output something like: `~/.local/share/manga-tui` <br />
 On the `manga-tui` directory there will be 3 directories
 
 - `history`, which contains a sqlite database to store reading history
-- `mangaDownloads`, where manga will be downloaded
+- `mangaDownloads`, where manga will be downloaded by default
 - `errorLogs`, for storing posible errors / bugs
 
-If you want to change the location of this directory you can set the environment variable `MANGA_TUI_DATA_DIR` to some path pointing to a directory, like: <br />
+To customize only the download location (e.g. for Google Drive or an external drive), set `download_dir` in `config.toml`:
+```toml
+download_dir = "G:/Mi unidad/Mangas"
+```
+
+You can view the active download directory by running:
+```shell
+manga-tui --download-dir
+```
+
+If you want to change the location of the entire data directory you can set the environment variable `MANGA_TUI_DATA_DIR` to some path pointing to a directory, like: <br />
 
 ```shell
 export MANGA_TUI_DATA_DIR="/home/user/Desktop/mangas"

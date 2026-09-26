@@ -111,6 +111,27 @@ impl ConfigParam for DownloadTypeParam {
 }
 
 #[derive(Debug, Default)]
+struct DownloadDirParam;
+
+impl ConfigParam for DownloadDirParam {
+    fn name(&self) -> &'static str {
+        "download_dir"
+    }
+
+    fn comments(&self) -> &'static str {
+        "Custom directory for downloaded mangas, leave empty \"\" to use the default directory"
+    }
+
+    fn values(&self) -> &'static str {
+        "path string (e.g. \"G:/Mi unidad/Mangas\" or 'G:\\Mi unidad\\Mangas')"
+    }
+
+    fn defaults(&self) -> &'static str {
+        r#""""#
+    }
+}
+
+#[derive(Debug, Default)]
 struct ImageQualityParam;
 
 impl ConfigParam for ImageQualityParam {
@@ -371,6 +392,7 @@ struct ConfigBuilder<'a> {
 fn config_params() -> Vec<Box<dyn ConfigParam>> {
     vec![
         Box::new(DownloadTypeParam),
+        Box::new(DownloadDirParam),
         Box::new(ImageQualityParam),
         Box::new(ImageResizeFilterParam),
         Box::new(AmountPagesParam),
@@ -580,6 +602,9 @@ pub struct AnilistConfig {
 pub struct MangaTuiConfig {
     /// The format to download manga in.
     pub download_type: DownloadType,
+    /// Custom directory for downloaded mangas. If empty, the default mangaDownloads directory is used.
+    #[serde(default)]
+    pub download_dir: String,
     /// The image quality for downloads.
     pub image_quality: ImageQuality,
     /// The filter used to resize manga pages in the reader.
@@ -667,6 +692,7 @@ impl Default for MangaTuiConfig {
             auto_bookmark: true,
             check_new_updates: true,
             download_type: DownloadType::default(),
+            download_dir: String::default(),
             image_quality: ImageQuality::default(),
             image_resize_filter: ImageResizeFilter::default(),
             track_reading_when_download: false,
@@ -708,6 +734,23 @@ impl MangaTuiConfig {
             access_token: self.anilist.credentials.access_token.clone(),
             client_id: self.anilist.credentials.client_id.clone(),
         })
+    }
+
+    /// Returns the custom download directory path if configured, or None.
+    pub fn get_custom_download_dir(&self) -> Option<PathBuf> {
+        let trimmed = self.download_dir.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        if trimmed.starts_with('~') {
+            if let Some(home) = directories::BaseDirs::new().map(|b| b.home_dir().to_path_buf()) {
+                let without_tilde = trimmed.trim_start_matches('~').trim_start_matches(['/', '\\']);
+                return Some(home.join(without_tilde));
+            }
+        }
+
+        Some(PathBuf::from(trimmed))
     }
 }
 
@@ -1010,4 +1053,16 @@ param2 = ""
     //
     //    Ok(())
     //}
+
+    #[test]
+    fn custom_download_dir_is_parsed_correctly() {
+        let mut config = MangaTuiConfig::default();
+        assert_eq!(config.get_custom_download_dir(), None);
+
+        config.download_dir = "G:/Mi unidad/Mangas".to_string();
+        assert_eq!(config.get_custom_download_dir(), Some(PathBuf::from("G:/Mi unidad/Mangas")));
+
+        config.download_dir = "   ".to_string();
+        assert_eq!(config.get_custom_download_dir(), None);
+    }
 }

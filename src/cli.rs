@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 use strum_macros::Display;
 
-use crate::backend::APP_DATA_DIR;
+use crate::backend::{APP_DATA_DIR, AppDirectories};
 use crate::backend::error_log::write_to_error_log;
 use crate::backend::manga_provider::{Languages, MangaProviders};
 use crate::backend::secrets::SecretStorage;
@@ -58,6 +58,8 @@ pub struct CliArgs {
     pub data_dir: bool,
     #[arg(short, long)]
     pub config_dir: bool,
+    #[arg(long = "download-dir")]
+    pub download_dir: bool,
     #[arg(short = 'p', long = "provider")]
     pub manga_provider: Option<MangaProviders>,
     #[arg(short = 'l', long = "lang")]
@@ -121,6 +123,7 @@ impl CliArgs {
             config_dir: false,
             command: None,
             data_dir: false,
+            download_dir: false,
             manga_provider: Some(MangaProviders::default()),
             lang: None,
         }
@@ -233,6 +236,11 @@ impl CliArgs {
 
         if self.config_dir {
             println!("{}", get_config_directory_path().display());
+            exit(0)
+        }
+
+        if self.download_dir {
+            println!("{}", AppDirectories::MangaDownloads.get_full_path().display());
             exit(0)
         }
 
