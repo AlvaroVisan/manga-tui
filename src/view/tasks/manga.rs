@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::thread::sleep;
 use std::time::Duration;
 
 use tokio::sync::mpsc::UnboundedSender;
@@ -40,77 +39,8 @@ fn get_download_delay(total_chapters: usize) -> u64 {
 }
 
 pub async fn download_all_chapters<T: MangaPageProvider>(args: DownloadAllChapters<T>) {
-    let get_all_chapters_response = args.client.get_all_chapters(&args.manga_id, args.lang).await;
-
-    match get_all_chapters_response {
-        Ok(chapters) => {
-            let total_chapters = chapters.len();
-
-            args.tx.send(MangaPageEvents::StartDownloadProgress(total_chapters as f64)).ok();
-
-            let download_chapter_delay = get_download_delay(total_chapters);
-
-            for chapter in chapters {
-                let manga_id = args.manga_id.clone();
-                let manga_id_safe_for_download = args.manga_id_safe_for_download.clone();
-                let manga_title = args.manga_title.clone();
-                let client = Arc::clone(&args.client);
-                let inner_tx = args.tx.clone();
-
-                sleep(Duration::from_secs(download_chapter_delay));
-                tokio::spawn(async move {
-                    let chapter_pages_response = client
-                        .get_chapter_pages(&chapter.id, &manga_id, args.config.image_quality, |_, _| {})
-                        .await;
-                    match chapter_pages_response {
-                        Ok(pages) => {
-                            let original_chapter_title = chapter.title.clone();
-                            let chapter_id = chapter.id.clone();
-                            let chapter_to_download: ChapterToDownloadSanitized = ChapterToDownloadSanitized {
-                                chapter_id: chapter.id_safe_for_download,
-                                manga_id: manga_id_safe_for_download,
-                                manga_title: manga_title.into(),
-                                chapter_title: chapter.title.into(),
-                                chapter_number: chapter.chapter_number,
-                                volume_number: chapter.volume_number,
-                                language: args.lang,
-                                scanlator: chapter.scanlator.unwrap_or_default().into(),
-                                download_type: args.config.download_type,
-                                pages,
-                            };
-
-                            let downloader: &dyn MangaDownloader = match args.config.download_type {
-                                DownloadType::Cbz => &CbzDownloader::new(),
-                                DownloadType::Raw => &RawImagesDownloader::new(),
-                                DownloadType::Epub => &EpubDownloader::new(),
-                                DownloadType::Pdf => &PdfDownloader::new(),
-                            };
-
-                            let download_result = downloader
-                                .save_chapter_in_file_system(&AppDirectories::MangaDownloads.get_full_path(), chapter_to_download);
-
-                            if let Err(e) = download_result {
-                                write_to_error_log(
-                                    format!("failed to download chapter : {original_chapter_title}, details about the error : {e}")
-                                        .into(),
-                                );
-                            }
-
-                            inner_tx.send(MangaPageEvents::SetDownloadAllChaptersProgress).ok();
-                            inner_tx
-                                .send(MangaPageEvents::SaveChapterDownloadStatus(chapter_id, original_chapter_title))
-                                .ok();
-                        },
-                        Err(e) => {
-                            write_to_error_log(
-                                format!("failed to download chapter : {}, details about the error : {e}", chapter.title).into(),
-                            );
-                            inner_tx.send(MangaPageEvents::SetDownloadAllChaptersProgress).ok();
-                        },
-                    }
-                });
-            }
-        },
+    let chapters = match args.client.get_all_chapters(&args.manga_id, args.lang).await {
+        Ok(chapters) => chapters,
         Err(e) => {
             args.tx.send(MangaPageEvents::DownloadAllChaptersError).ok();
             write_to_error_log(
@@ -120,7 +50,70 @@ pub async fn download_all_chapters<T: MangaPageProvider>(args: DownloadAllChapte
                 )
                 .into(),
             );
+            return;
         },
+    };
+
+    let total_chapters = chapters.len();
+
+    args.tx.send(MangaPageEvents::StartDownloadProgress(total_chapters as f64)).ok();
+
+    let download_chapter_delay = get_download_delay(total_chapters);
+
+    for chapter in chapters {
+        let manga_id = args.manga_id.clone();
+        let manga_id_safe_for_download = args.manga_id_safe_for_download.clone();
+        let manga_title = args.manga_title.clone();
+        let client = Arc::clone(&args.client);
+        let inner_tx = args.tx.clone();
+
+        tokio::time::sleep(Duration::from_secs(download_chapter_delay)).await;
+        let chapter_pages_response = client
+            .get_chapter_pages(&chapter.id, &manga_id, args.config.image_quality, |_, _| {})
+            .await;
+        match chapter_pages_response {
+            Ok(pages) => {
+                let original_chapter_title = chapter.title.clone();
+                let chapter_id = chapter.id.clone();
+                let chapter_to_download: ChapterToDownloadSanitized = ChapterToDownloadSanitized {
+                    chapter_id: chapter.id_safe_for_download,
+                    manga_id: manga_id_safe_for_download,
+                    manga_title: manga_title.into(),
+                    chapter_title: chapter.title.into(),
+                    chapter_number: chapter.chapter_number,
+                    volume_number: chapter.volume_number,
+                    language: args.lang,
+                    scanlator: chapter.scanlator.unwrap_or_default().into(),
+                    download_type: args.config.download_type,
+                    pages,
+                };
+
+                let downloader: &dyn MangaDownloader = match args.config.download_type {
+                    DownloadType::Cbz => &CbzDownloader::new(),
+                    DownloadType::Raw => &RawImagesDownloader::new(),
+                    DownloadType::Epub => &EpubDownloader::new(),
+                    DownloadType::Pdf => &PdfDownloader::new(),
+                };
+
+                let download_result =
+                    downloader.save_chapter_in_file_system(&AppDirectories::MangaDownloads.get_full_path(), chapter_to_download);
+
+                if let Err(e) = download_result {
+                    write_to_error_log(
+                        format!("failed to download chapter : {original_chapter_title}, details about the error : {e}").into(),
+                    );
+                }
+
+                inner_tx.send(MangaPageEvents::SetDownloadAllChaptersProgress).ok();
+                inner_tx
+                    .send(MangaPageEvents::SaveChapterDownloadStatus(chapter_id, original_chapter_title))
+                    .ok();
+            },
+            Err(e) => {
+                write_to_error_log(format!("failed to download chapter : {}, details about the error : {e}", chapter.title).into());
+                inner_tx.send(MangaPageEvents::SetDownloadAllChaptersProgress).ok();
+            },
+        }
     }
 }
 
