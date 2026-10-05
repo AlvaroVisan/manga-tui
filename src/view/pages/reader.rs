@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent};
+use image::DynamicImage;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
@@ -73,26 +74,76 @@ pub enum MangaReaderEvents {
 }
 
 pub struct Page {
-    pub slices: Vec<Box<dyn StatefulProtocol>>,
-    pub current_slice: usize,
+    pub raw_image: Option<Arc<DynamicImage>>,
+    pub cached_protocol: Option<Box<dyn StatefulProtocol>>,
+    pub cached_y: u32,
+    pub scroll_y: u32,
     pub dimensions: Option<(u32, u32)>,
 }
 
 impl Page {
     pub fn new() -> Self {
         Self {
-            slices: Vec::new(),
-            current_slice: 0,
+            raw_image: None,
+            cached_protocol: None,
+            cached_y: u32::MAX,
+            scroll_y: 0,
             dimensions: None,
         }
     }
 
     pub fn is_loaded(&self) -> bool {
-        !self.slices.is_empty()
+        self.cached_protocol.is_some() || self.raw_image.is_some()
     }
 
-    pub fn current_image_state_mut(&mut self) -> Option<&mut Box<dyn StatefulProtocol>> {
-        self.slices.get_mut(self.current_slice)
+    pub fn is_tall_strip(&self) -> bool {
+        if let Some((w, h)) = self.dimensions {
+            w > 0 && (h as f64) > (w as f64) * 1.6
+        } else {
+            false
+        }
+    }
+
+    pub fn viewport_height(&self) -> u32 {
+        if let Some((w, h)) = self.dimensions {
+            if self.is_tall_strip() {
+                ((w as f64) * 1.35) as u32
+            } else {
+                h
+            }
+        } else {
+            0
+        }
+    }
+
+    pub fn max_scroll_y(&self) -> u32 {
+        if let Some((_, h)) = self.dimensions {
+            let v_h = self.viewport_height();
+            h.saturating_sub(v_h)
+        } else {
+            0
+        }
+    }
+
+    pub fn scroll_step(&self) -> u32 {
+        let v_h = self.viewport_height();
+        (v_h / 4).max(150)
+    }
+
+    pub fn get_or_create_protocol(&mut self, picker: &mut Picker) -> Option<&mut Box<dyn StatefulProtocol>> {
+        if self.is_tall_strip() {
+            if let Some(ref raw) = self.raw_image {
+                if self.cached_protocol.is_none() || self.cached_y != self.scroll_y {
+                    let (width, height) = self.dimensions.unwrap_or((raw.width(), raw.height()));
+                    let v_h = self.viewport_height();
+                    let curr_h = v_h.min(height.saturating_sub(self.scroll_y));
+                    let cropped = raw.crop_imm(0, self.scroll_y, width, curr_h);
+                    self.cached_protocol = Some(picker.new_resize_protocol(cropped));
+                    self.cached_y = self.scroll_y;
+                }
+            }
+        }
+        self.cached_protocol.as_mut()
     }
 }
 
@@ -143,13 +194,17 @@ where
         Block::bordered().render(left, buf);
 
         let index = self.current_page_index();
-        let show_reload = if let Some(page) = self.pages.get_mut(index).filter(|page| page.is_loaded()) {
-            let filter = MangaTuiConfig::get().image_resize_filter.to_filter_type();
-            let image = StatefulImage::new(None).resize(Resize::Fit(Some(filter)));
-            if let Some(slice_protocol) = page.current_image_state_mut() {
-                StatefulWidget::render(image, center, buf, slice_protocol);
-            }
-            let (width, height) = page.dimensions.unwrap();
+        let page_loaded = self.pages.get(index).map(|page| page.is_loaded()).unwrap_or(false);
+        let show_reload = if page_loaded {
+            let (width, height) = {
+                let page = &mut self.pages[index];
+                let filter = MangaTuiConfig::get().image_resize_filter.to_filter_type();
+                let image = StatefulImage::new(None).resize(Resize::Fit(Some(filter)));
+                if let Some(protocol) = page.get_or_create_protocol(&mut self.picker) {
+                    StatefulWidget::render(image, center, buf, protocol);
+                }
+                page.dimensions.unwrap()
+            };
             self.resize_based_on_image_size(width, height);
 
             false
@@ -274,15 +329,21 @@ where
     fn next_page(&mut self) {
         let curr_index = self.current_page_index();
         if let Some(page) = self.pages.get_mut(curr_index) {
-            if page.current_slice + 1 < page.slices.len() {
-                page.current_slice += 1;
-                return;
+            if page.is_tall_strip() {
+                let max_scroll = page.max_scroll_y();
+                if page.scroll_y < max_scroll {
+                    let step = page.scroll_step();
+                    page.scroll_y = (page.scroll_y + step).min(max_scroll);
+                    return;
+                }
             }
         }
         self.page_list_state.list_state.next();
         let new_index = self.current_page_index();
-        if let Some(page) = self.pages.get_mut(new_index) {
-            page.current_slice = 0;
+        if new_index != curr_index {
+            if let Some(page) = self.pages.get_mut(new_index) {
+                page.scroll_y = 0;
+            }
         }
         self.fetch_pages();
     }
@@ -290,17 +351,20 @@ where
     fn previous_page(&mut self) {
         let curr_index = self.current_page_index();
         if let Some(page) = self.pages.get_mut(curr_index) {
-            if page.current_slice > 0 {
-                page.current_slice -= 1;
+            if page.is_tall_strip() && page.scroll_y > 0 {
+                let step = page.scroll_step();
+                page.scroll_y = page.scroll_y.saturating_sub(step);
                 return;
             }
         }
         if curr_index > 0 {
             self.page_list_state.list_state.previous();
             let new_index = self.current_page_index();
-            if let Some(page) = self.pages.get_mut(new_index) {
-                if !page.slices.is_empty() {
-                    page.current_slice = page.slices.len().saturating_sub(1);
+            if new_index != curr_index {
+                if let Some(page) = self.pages.get_mut(new_index) {
+                    if page.is_tall_strip() {
+                        page.scroll_y = page.max_scroll_y();
+                    }
                 }
             }
             self.fetch_pages();
@@ -323,31 +387,15 @@ where
         match self.pages.get_mut(data.index) {
             Some(page) => {
                 let (width, height) = data.panel.dimensions;
-                // If it's a webtoon / vertical strip (height > width * 1.8), slice it into page-sized sub-viewports
-                if width > 0 && height as f64 > (width as f64) * 1.8 {
-                    let target_aspect = 1.4; // standard manga page ratio (height / width)
-                    let slice_height = ((width as f64) * target_aspect) as u32;
-                    let overlap = ((slice_height as f64) * 0.08) as u32; // 8% overlap to prevent cutting across words
-
-                    let mut y = 0;
-                    let mut protocols = Vec::new();
-                    while y < height {
-                        let curr_h = slice_height.min(height - y);
-                        let cropped = data.panel.image_decoded.crop_imm(0, y, width, curr_h);
-                        protocols.push(self.picker.new_resize_protocol(cropped));
-                        if y + curr_h >= height {
-                            break;
-                        }
-                        y += curr_h.saturating_sub(overlap).max(1);
-                    }
-                    page.slices = protocols;
-                    page.current_slice = 0;
-                    page.dimensions = Some((width, height));
+                page.dimensions = Some((width, height));
+                page.scroll_y = 0;
+                page.cached_y = u32::MAX;
+                if width > 0 && (height as f64) > (width as f64) * 1.6 {
+                    page.raw_image = Some(Arc::new(data.panel.image_decoded));
+                    page.cached_protocol = None;
                 } else {
-                    let protocol = self.picker.new_resize_protocol(data.panel.image_decoded);
-                    page.slices = vec![protocol];
-                    page.current_slice = 0;
-                    page.dimensions = Some((width, height));
+                    page.raw_image = None;
+                    page.cached_protocol = Some(self.picker.new_resize_protocol(data.panel.image_decoded));
                 }
             },
             None => {
@@ -363,7 +411,7 @@ where
     }
 
     fn resize_based_on_image_size(&mut self, width: u32, height: u32) {
-        if width > 300 && (width > height || height as f64 > (width as f64) * 1.8) {
+        if width > 300 && (width > height || height as f64 > (width as f64) * 1.6) {
             self.current_page_size = PageSize::Wide;
         } else {
             self.current_page_size = PageSize::Normal;
@@ -535,8 +583,16 @@ where
                 .margin(2)
                 .areas(area);
 
+        let (prev_label, next_label) = if self.pages.get(self.current_page_index()).map(|p| p.is_tall_strip()).unwrap_or(false) {
+            ("Scroll up / Prev: ", "Scroll down / Next: ")
+        } else {
+            ("Previous page: ", "Next page: ")
+        };
+
         let mut instructions = vec![
             Line::from(vec!["Go back: ".into(), "<Backspace>".to_span().style(*INSTRUCTIONS_STYLE)]),
+            Line::from(vec![prev_label.into(), "<k>, <Up>, Scroll".to_span().style(*INSTRUCTIONS_STYLE)]),
+            Line::from(vec![next_label.into(), "<j>, <Down>, Scroll".to_span().style(*INSTRUCTIONS_STYLE)]),
             Line::from(vec!["Next chapter: ".into(), "<w>".to_span().style(*INSTRUCTIONS_STYLE)]),
             Line::from(vec!["Previous chapter: ".into(), "<b>".to_span().style(*INSTRUCTIONS_STYLE)]),
         ];
@@ -559,12 +615,14 @@ where
         );
 
         if let Some(page) = self.pages.get(self.current_page_index()) {
-            if page.slices.len() > 1 {
-                current_chapter_title.push_str(&format!(
-                    "\nPart : {} / {}",
-                    page.current_slice + 1,
-                    page.slices.len()
-                ));
+            if page.is_tall_strip() {
+                let max_scroll = page.max_scroll_y();
+                let percent = if max_scroll > 0 {
+                    (page.scroll_y as f64 / max_scroll as f64 * 100.0).round() as u32
+                } else {
+                    100
+                };
+                current_chapter_title.push_str(&format!("\nScroll : {}%", percent));
             }
         }
 
@@ -633,10 +691,10 @@ where
 
     fn handle_key_events(&mut self, key_event: KeyEvent) {
         match key_event.code {
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::PageDown => {
                 self.local_action_tx.send(MangaReaderActions::NextPage).ok();
             },
-            KeyCode::Up | KeyCode::Char('k') => {
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::PageUp => {
                 self.local_action_tx.send(MangaReaderActions::PreviousPage).ok();
             },
             KeyCode::Char('w') => {
@@ -1326,7 +1384,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_manhwa_strip_slicing_and_navigation() {
+    async fn test_manhwa_strip_scrolling_and_navigation() {
         use image::DynamicImage;
         use crate::backend::manga_provider::MangaPanel;
 
@@ -1339,6 +1397,10 @@ mod test {
             MangaReader::new(chapter, "some_id".to_string(), Picker::new((8, 8)), ReaderPageProvierMock::new().into());
 
         manga_reader.init_fetching_pages();
+        let area = Rect::new(0, 0, 20, 20);
+        let mut buf = Buffer::empty(area);
+        manga_reader.render_page_list(area, &mut buf);
+        manga_reader.page_list_state.list_state.select(Some(0));
         assert_eq!(2, manga_reader.pages.len());
 
         // Create a tall image (800x4000) representing a manhwa strip
@@ -1352,18 +1414,32 @@ mod test {
 
         let page0 = &manga_reader.pages[0];
         assert!(page0.is_loaded());
-        assert!(page0.slices.len() > 1, "Expected multiple slices for tall manhwa image");
+        assert!(page0.is_tall_strip(), "Expected is_tall_strip to be true");
+        assert_eq!(0, manga_reader.pages[0].scroll_y);
 
-        assert_eq!(0, manga_reader.pages[0].current_slice);
-
-        // Next page action advances through slices first
+        // Next page action advances scroll_y by step first
+        let step = manga_reader.pages[0].scroll_step();
+        assert!(step > 0);
         manga_reader.next_page();
-        assert_eq!(1, manga_reader.pages[0].current_slice);
+        assert_eq!(step, manga_reader.pages[0].scroll_y);
         assert_eq!(0, manga_reader.current_page_index());
 
-        // Previous page goes back in slices
+        // Previous page decreases scroll_y
         manga_reader.previous_page();
-        assert_eq!(0, manga_reader.pages[0].current_slice);
+        assert_eq!(0, manga_reader.pages[0].scroll_y);
         assert_eq!(0, manga_reader.current_page_index());
+
+        // Scroll to the end of the page
+        let max_scroll = manga_reader.pages[0].max_scroll_y();
+        manga_reader.pages[0].scroll_y = max_scroll;
+
+        // Next page when at max_scroll transitions to page 1
+        manga_reader.next_page();
+        assert_eq!(1, manga_reader.current_page_index());
+
+        // Previous page transitions back to page 0 positioned at bottom
+        manga_reader.previous_page();
+        assert_eq!(0, manga_reader.current_page_index());
+        assert_eq!(max_scroll, manga_reader.pages[0].scroll_y);
     }
 }
