@@ -31,9 +31,7 @@ pub struct ChapterToDownloadSanitized {
 pub trait MangaDownloader {
     /// The `base_directory` where the pages will be saved, for `raw_images`
     fn make_manga_base_directory_name(&self, base_directory: &Path, chapter: &ChapterToDownloadSanitized) -> PathBuf {
-        base_directory
-            .join(format!("{} {}", chapter.manga_title, chapter.manga_id))
-            .join(chapter.language.as_human_readable())
+        base_directory.join(chapter.manga_title.as_path())
     }
     fn create_manga_base_directory(&self, base_directory: &Path) -> Result<(), Box<dyn Error>> {
         if !exists!(base_directory) {
@@ -91,7 +89,7 @@ mod tests {
             pages: vec![],
         };
 
-        let expected = Path::new("./test/some manga title manga id/English");
+        let expected = Path::new("./test/some manga title");
         let result = downloader.make_manga_base_directory_name(Path::new("./test"), &test_chapter);
 
         assert_eq!(expected, result);
