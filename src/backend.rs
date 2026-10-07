@@ -105,13 +105,7 @@ pub fn build_data_dir(logger: &impl ILogger) -> Result<PathBuf, Box<dyn std::err
             if let Some(custom_dir) = config.get_custom_download_dir() {
                 if !exists!(&custom_dir) {
                     if let Err(e) = create_dir_all(&custom_dir) {
-                        logger.error(
-                            format!(
-                                "Could not create custom download directory {}: {e}",
-                                custom_dir.display()
-                            )
-                            .into(),
-                        );
+                        logger.error(format!("Could not create custom download directory {}: {e}", custom_dir.display()).into());
                     }
                 }
             }

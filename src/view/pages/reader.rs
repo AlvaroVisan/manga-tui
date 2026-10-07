@@ -97,23 +97,11 @@ impl Page {
     }
 
     pub fn is_tall_strip(&self) -> bool {
-        if let Some((w, h)) = self.dimensions {
-            w > 0 && (h as f64) > (w as f64) * 1.6
-        } else {
-            false
-        }
+        if let Some((w, h)) = self.dimensions { w > 0 && (h as f64) > (w as f64) * 1.6 } else { false }
     }
 
     pub fn viewport_height(&self) -> u32 {
-        if let Some((w, h)) = self.dimensions {
-            if self.is_tall_strip() {
-                ((w as f64) * 1.35) as u32
-            } else {
-                h
-            }
-        } else {
-            0
-        }
+        if let Some((w, h)) = self.dimensions { if self.is_tall_strip() { ((w as f64) * 1.35) as u32 } else { h } } else { 0 }
     }
 
     pub fn max_scroll_y(&self) -> u32 {
@@ -462,13 +450,7 @@ where
             self.pages[start_index..=end_index]
                 .iter()
                 .enumerate()
-                .filter_map(|(base_index, page)| {
-                    if page.is_loaded() {
-                        None
-                    } else {
-                        Some(base_index + start_index)
-                    }
-                })
+                .filter_map(|(base_index, page)| if page.is_loaded() { None } else { Some(base_index + start_index) })
                 .collect()
         } else {
             vec![]
@@ -617,11 +599,7 @@ where
         if let Some(page) = self.pages.get(self.current_page_index()) {
             if page.is_tall_strip() {
                 let max_scroll = page.max_scroll_y();
-                let percent = if max_scroll > 0 {
-                    (page.scroll_y as f64 / max_scroll as f64 * 100.0).round() as u32
-                } else {
-                    100
-                };
+                let percent = if max_scroll > 0 { (page.scroll_y as f64 / max_scroll as f64 * 100.0).round() as u32 } else { 100 };
                 current_chapter_title.push_str(&format!("\nScroll : {}%", percent));
             }
         }
@@ -1386,6 +1364,7 @@ mod test {
     #[tokio::test]
     async fn test_manhwa_strip_scrolling_and_navigation() {
         use image::DynamicImage;
+
         use crate::backend::manga_provider::MangaPanel;
 
         let chapter: ChapterToRead = ChapterToRead {
