@@ -60,7 +60,7 @@ pub struct CliArgs {
     pub config_dir: bool,
     #[arg(long = "download-dir")]
     pub download_dir: bool,
-    #[arg(short = 'p', long = "provider")]
+    #[arg(short = 'p', long = "provider", visible_alias = "manga-provider")]
     pub manga_provider: Option<MangaProviders>,
     #[arg(short = 'l', long = "lang")]
     pub lang: Option<String>,
