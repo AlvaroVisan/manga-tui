@@ -22,7 +22,7 @@ jobs:
     runs-on: ${{ matrix.targets.os }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Install dependencies (Linux only)
         if: runner.os == 'Linux'
@@ -39,7 +39,7 @@ jobs:
       - name: Checksum
         run: shasum -a 256 manga-tui-${{ env.RELEASE_VERSION }}-${{ matrix.targets.target }}.tar.gz
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: release-${{ matrix.targets.target }}
           path: manga-tui-${{ env.RELEASE_VERSION }}-${{ matrix.targets.target }}.tar.gz
@@ -51,7 +51,7 @@ jobs:
     needs: build
     steps:
       - name: Download artifact
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
         with:
           path: releases
           pattern: release-*
@@ -59,7 +59,7 @@ jobs:
       - name: Checksum
         run: sha256sum releases/* > ./releases/checksum.txt
       - name: Create Draft Release
-        uses: softprops/action-gh-release@v2.4.1
+        uses: softprops/action-gh-release@v2.4.2
         with:
           draft: true
           generate_release_notes: true

@@ -709,13 +709,8 @@ impl FiltersHandler for MangadexFilterProvider {
 
 impl MangadexFilterProvider {
     pub fn reset(&mut self) {
-        if self.tags_state.tags.is_some() {
-            self.tags_state
-                .tags
-                .as_mut()
-                .unwrap()
-                .iter_mut()
-                .for_each(|tag| tag.state = TagListItemState::NotSelected);
+        if let Some(tags) = &mut self.tags_state.tags {
+            tags.iter_mut().for_each(|tag| tag.state = TagListItemState::NotSelected);
             self.tags_state.filter_input.reset();
         }
 
@@ -786,10 +781,8 @@ impl MangadexFilterProvider {
                 KeyCode::Tab => self.next_filter(),
                 KeyCode::BackTab => self.previous_filter(),
                 KeyCode::Char('s') => self.toggle_filter_list(),
-                KeyCode::Char('d') => {
-                    if *FILTERS.get(self.id_filter).unwrap() == MangaFilters::Tags {
-                        self.exclude_tag_selected();
-                    }
+                KeyCode::Char('d') if *FILTERS.get(self.id_filter).unwrap() == MangaFilters::Tags => {
+                    self.exclude_tag_selected();
                 },
                 KeyCode::Char('r') => self.reset(),
                 KeyCode::Char('l') | KeyCode::Right => self.toggle_focus_input(),
