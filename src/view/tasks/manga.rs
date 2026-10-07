@@ -38,38 +38,31 @@ fn get_download_delay(total_chapters: usize) -> u64 {
     }
 }
 
-pub async fn download_all_chapters<T: MangaPageProvider>(args: DownloadAllChapters<T>) {
-    let chapters = match args.client.get_all_chapters(&args.manga_id, args.lang).await {
-        Ok(chapters) => chapters,
-        Err(e) => {
-            args.tx.send(MangaPageEvents::DownloadAllChaptersError).ok();
-            write_to_error_log(
-                format!(
-                    "could not get all chapter for manga {} with id {} more details about the error: \n{e}",
-                    args.manga_title, args.manga_id
-                )
-                .into(),
-            );
-            return;
-        },
-    };
-
+async fn download_chapters_batch<T: MangaPageProvider>(
+    chapters: Vec<Chapter>,
+    client: Arc<T>,
+    manga_id: String,
+    manga_id_safe_for_download: String,
+    manga_title: String,
+    lang: Languages,
+    config: MangaTuiConfig,
+    tx: UnboundedSender<MangaPageEvents>,
+) {
     let total_chapters = chapters.len();
-
-    args.tx.send(MangaPageEvents::StartDownloadProgress(total_chapters as f64)).ok();
+    tx.send(MangaPageEvents::StartDownloadProgress(total_chapters as f64)).ok();
 
     let download_chapter_delay = get_download_delay(total_chapters);
 
     for chapter in chapters {
-        let manga_id = args.manga_id.clone();
-        let manga_id_safe_for_download = args.manga_id_safe_for_download.clone();
-        let manga_title = args.manga_title.clone();
-        let client = Arc::clone(&args.client);
-        let inner_tx = args.tx.clone();
+        let manga_id = manga_id.clone();
+        let manga_id_safe_for_download = manga_id_safe_for_download.clone();
+        let manga_title = manga_title.clone();
+        let client = Arc::clone(&client);
+        let inner_tx = tx.clone();
 
         tokio::time::sleep(Duration::from_secs(download_chapter_delay)).await;
         let chapter_pages_response = client
-            .get_chapter_pages(&chapter.id, &manga_id, args.config.image_quality, |_, _| {})
+            .get_chapter_pages(&chapter.id, &manga_id, config.image_quality, |_, _| {})
             .await;
         match chapter_pages_response {
             Ok(pages) => {
@@ -82,13 +75,13 @@ pub async fn download_all_chapters<T: MangaPageProvider>(args: DownloadAllChapte
                     chapter_title: chapter.title.into(),
                     chapter_number: chapter.chapter_number,
                     volume_number: chapter.volume_number,
-                    language: args.lang,
+                    language: lang,
                     scanlator: chapter.scanlator.unwrap_or_default().into(),
-                    download_type: args.config.download_type,
+                    download_type: config.download_type,
                     pages,
                 };
 
-                let downloader: &dyn MangaDownloader = match args.config.download_type {
+                let downloader: &dyn MangaDownloader = match config.download_type {
                     DownloadType::Cbz => &CbzDownloader::new(),
                     DownloadType::Raw => &RawImagesDownloader::new(),
                     DownloadType::Epub => &EpubDownloader::new(),
@@ -115,6 +108,61 @@ pub async fn download_all_chapters<T: MangaPageProvider>(args: DownloadAllChapte
             },
         }
     }
+}
+
+pub async fn download_all_chapters<T: MangaPageProvider>(args: DownloadAllChapters<T>) {
+    let chapters = match args.client.get_all_chapters(&args.manga_id, args.lang).await {
+        Ok(chapters) => chapters,
+        Err(e) => {
+            args.tx.send(MangaPageEvents::DownloadAllChaptersError).ok();
+            write_to_error_log(
+                format!(
+                    "could not get all chapter for manga {} with id {} more details about the error: \n{e}",
+                    args.manga_title, args.manga_id
+                )
+                .into(),
+            );
+            return;
+        },
+    };
+
+    download_chapters_batch(
+        chapters,
+        args.client,
+        args.manga_id,
+        args.manga_id_safe_for_download,
+        args.manga_title,
+        args.lang,
+        args.config,
+        args.tx,
+    )
+    .await;
+}
+
+#[derive(Debug)]
+pub struct DownloadSelectedChapters<T: MangaPageProvider> {
+    pub client: Arc<T>,
+    pub manga_id: String,
+    pub manga_id_safe_for_download: String,
+    pub manga_title: String,
+    pub lang: Languages,
+    pub chapters: Vec<Chapter>,
+    pub config: MangaTuiConfig,
+    pub tx: UnboundedSender<MangaPageEvents>,
+}
+
+pub async fn download_selected_chapters<T: MangaPageProvider>(args: DownloadSelectedChapters<T>) {
+    download_chapters_batch(
+        args.chapters,
+        args.client,
+        args.manga_id,
+        args.manga_id_safe_for_download,
+        args.manga_title,
+        args.lang,
+        args.config,
+        args.tx,
+    )
+    .await;
 }
 
 #[derive(Debug)]

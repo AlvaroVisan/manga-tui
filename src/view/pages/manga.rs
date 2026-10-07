@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent, MouseEventKind};
@@ -23,8 +24,8 @@ use crate::backend::database::{
 };
 use crate::backend::error_log::{self, ErrorType, write_to_error_log};
 use crate::backend::manga_provider::{
-    ChapterFilters, ChapterOrderBy, ChapterToRead, GetChaptersResponse, Languages, ListOfChapters, Manga, MangaPageProvider,
-    Pagination,
+    Chapter, ChapterFilters, ChapterOrderBy, ChapterToRead, GetChaptersResponse, Languages, ListOfChapters, Manga,
+    MangaPageProvider, Pagination,
 };
 use crate::backend::tracker::{MangaTracker, track_manga};
 use crate::backend::tui::Events;
@@ -32,7 +33,10 @@ use crate::common::format_error_message_tracking_reading_history;
 use crate::config::MangaTuiConfig;
 use crate::global::{ERROR_STYLE, INSTRUCTIONS_STYLE};
 use crate::view::app::MangaToRead;
-use crate::view::tasks::manga::{DownloadAllChapters, DownloadSingleChapter, download_all_chapters, download_single_chapter};
+use crate::view::tasks::manga::{
+    DownloadAllChapters, DownloadSelectedChapters, DownloadSingleChapter, download_all_chapters,
+    download_selected_chapters, download_single_chapter,
+};
 use crate::view::widgets::Component;
 use crate::view::widgets::manga::{
     ChapterItem, ChaptersListWidget, DownloadAllChaptersState, DownloadAllChaptersWidget, DownloadPhase,
@@ -70,6 +74,10 @@ pub enum MangaPageActions {
     /// This event starts the process of downloading a single chapter which is split into two
     /// steps: 1 get the chapter pages and 2 save those pages in the user's filesystem
     DownloadChapter,
+    ToggleSelectChapter,
+    ToggleSelectAllCurrentPage,
+    ClearSelectedChapters,
+    AskDownloadSelectedChapters,
     ConfirmDownloadAll,
     CancelDownloadAll,
     AskDownloadAllChapters,
@@ -137,6 +145,7 @@ where
     available_languages_state: ListState,
     is_list_languages_open: bool,
     download_all_chapters_state: DownloadAllChaptersState,
+    pub selected_chapters: HashMap<String, Chapter>,
     manga_tracker: Option<S>,
     manga_provider: Arc<T>,
 }
@@ -197,6 +206,7 @@ where
             available_languages_state: ListState::default(),
             is_list_languages_open: false,
             download_all_chapters_state: DownloadAllChaptersState::new(local_event_tx),
+            selected_chapters: HashMap::new(),
             cover_area,
             manga_tracker: None,
             manga_provider: provider,
@@ -324,35 +334,54 @@ where
                 let tota_pages = chapters.pagination.get_total_pages();
                 let page = format!("Page {} of : {}", chapters.pagination.current_page, tota_pages);
                 let total = format!("Total chapters {}", chapters.pagination.total_items);
+                let selected_count = self.selected_chapters.len();
 
                 let mut chapter_instructions = vec![
-                    "Scroll Down/Up ".into(),
-                    Span::raw(" <j>/<k> ").style(*INSTRUCTIONS_STYLE),
-                    " Download chapter ".into(),
-                    Span::raw(" <d> ").style(*INSTRUCTIONS_STYLE),
-                    " Download all chapters ".into(),
-                    Span::raw(" <a> ").style(*INSTRUCTIONS_STYLE),
+                    "Scroll ".into(),
+                    Span::raw("<j>/<k>").style(*INSTRUCTIONS_STYLE),
+                    " Select ".into(),
+                    Span::raw("<Space>").style(*INSTRUCTIONS_STYLE),
                 ];
 
-                if self.picker.is_some() {
-                    chapter_instructions.push(" Read chapter ".into());
-                    chapter_instructions.push(Span::raw(" <r> ").style(*INSTRUCTIONS_STYLE));
+                if selected_count > 0 {
+                    chapter_instructions.push(format!(" Download ({selected_count}) ").into());
+                    chapter_instructions.push(Span::raw("<d>").style(*INSTRUCTIONS_STYLE));
+                    chapter_instructions.push(" Clear ".into());
+                    chapter_instructions.push(Span::raw("<c>").style(*INSTRUCTIONS_STYLE));
+                } else {
+                    chapter_instructions.push(" Download ".into());
+                    chapter_instructions.push(Span::raw("<d>").style(*INSTRUCTIONS_STYLE));
+                }
 
-                    chapter_instructions.push(" Read bookmark ".into());
-                    chapter_instructions.push(Span::raw(" <Tab> ").style(*INSTRUCTIONS_STYLE));
+                chapter_instructions.push(" Download all ".into());
+                chapter_instructions.push(Span::raw("<a>").style(*INSTRUCTIONS_STYLE));
+
+                if self.picker.is_some() {
+                    chapter_instructions.push(" Read ".into());
+                    chapter_instructions.push(Span::raw("<r>").style(*INSTRUCTIONS_STYLE));
+
+                    chapter_instructions.push(" Bookmark ".into());
+                    chapter_instructions.push(Span::raw("<Tab>").style(*INSTRUCTIONS_STYLE));
                 }
 
                 let mut bottom_instructions: Vec<Span<'_>> = vec![
                     page.into(),
                     " | ".into(),
                     total.into(),
-                    " Next ".into(),
-                    "<w>".to_span().style(*INSTRUCTIONS_STYLE),
-                    " Previous ".into(),
-                    "<b>".to_span().style(*INSTRUCTIONS_STYLE),
                 ];
+                if selected_count > 0 {
+                    bottom_instructions.push(format!(" | Selected: {selected_count}").bold().green());
+                }
+                bottom_instructions.extend([
+                    " | Next ".into(),
+                    "<w>".to_span().style(*INSTRUCTIONS_STYLE),
+                    " Prev ".into(),
+                    "<b>".to_span().style(*INSTRUCTIONS_STYLE),
+                    " Toggle all ".into(),
+                    "<v>".to_span().style(*INSTRUCTIONS_STYLE),
+                ]);
                 if !self.bookmark_state.auto_bookmark {
-                    bottom_instructions.push(" Bookmark chapter ".into());
+                    bottom_instructions.push(" Bookmark ".into());
                     bottom_instructions.push("<m>".to_span().style(*INSTRUCTIONS_STYLE));
                 }
 
@@ -519,11 +548,24 @@ where
                     KeyCode::Char('t') => {
                         self.local_action_tx.send(MangaPageActions::ToggleOrder).ok();
                     },
+                    KeyCode::Char(' ') => {
+                        self.local_action_tx.send(MangaPageActions::ToggleSelectChapter).ok();
+                    },
+                    KeyCode::Char('v') => {
+                        self.local_action_tx.send(MangaPageActions::ToggleSelectAllCurrentPage).ok();
+                    },
+                    KeyCode::Char('c') => {
+                        self.local_action_tx.send(MangaPageActions::ClearSelectedChapters).ok();
+                    },
                     KeyCode::Char('r') | KeyCode::Enter => {
                         self.local_action_tx.send(MangaPageActions::ReadChapter).ok();
                     },
                     KeyCode::Char('d') => {
-                        self.local_action_tx.send(MangaPageActions::DownloadChapter).ok();
+                        if self.selected_chapters.is_empty() {
+                            self.local_action_tx.send(MangaPageActions::DownloadChapter).ok();
+                        } else {
+                            self.local_action_tx.send(MangaPageActions::AskDownloadSelectedChapters).ok();
+                        }
                     },
                     KeyCode::Char('a') => {
                         self.local_action_tx.send(MangaPageActions::AskDownloadAllChapters).ok();
@@ -571,6 +613,85 @@ where
     fn toggle_chapter_order(&mut self) {
         self.chapter_filters.order = self.chapter_filters.order.toggle();
         self.search_chapters();
+    }
+
+    fn toggle_select_current_chapter(&mut self) {
+        if let Some(chapters) = self.chapters.as_mut() {
+            if let Some(selected_index) = chapters.state.selected {
+                if let Some(item) = chapters.widget.chapters.get_mut(selected_index) {
+                    item.is_selected = !item.is_selected;
+                    if item.is_selected {
+                        self.selected_chapters.insert(item.chapter.id.clone(), item.chapter.clone());
+                    } else {
+                        self.selected_chapters.remove(&item.chapter.id);
+                    }
+                }
+                if selected_index + 1 < chapters.widget.chapters.len() {
+                    chapters.state.next();
+                }
+            }
+        }
+    }
+
+    fn toggle_select_all_current_page(&mut self) {
+        if let Some(chapters) = self.chapters.as_mut() {
+            let all_selected = !chapters.widget.chapters.is_empty()
+                && chapters.widget.chapters.iter().all(|item| item.is_selected);
+            for item in chapters.widget.chapters.iter_mut() {
+                if all_selected {
+                    item.is_selected = false;
+                    self.selected_chapters.remove(&item.chapter.id);
+                } else {
+                    item.is_selected = true;
+                    self.selected_chapters.insert(item.chapter.id.clone(), item.chapter.clone());
+                }
+            }
+        }
+    }
+
+    fn clear_selected_chapters(&mut self) {
+        self.selected_chapters.clear();
+        if let Some(chapters) = self.chapters.as_mut() {
+            for item in chapters.widget.chapters.iter_mut() {
+                item.is_selected = false;
+            }
+        }
+    }
+
+    fn ask_download_selected_chapters(&mut self) {
+        let total_selected = self.selected_chapters.len() as f64;
+        self.download_all_chapters_state.ask_for_confirmation_selected(total_selected);
+    }
+
+    fn confirm_download_selected_chapters(&mut self) {
+        let total_selected = self.selected_chapters.len() as f64;
+        self.start_download_all_chapters(total_selected);
+
+        let manga_id = self.manga.id.clone();
+        let manga_id_safe_for_download = self.manga.id_safe_for_download.clone();
+        let manga_title = self.manga.title.clone();
+        let lang = self.get_current_selected_language();
+        let tx = self.local_event_tx.clone();
+        let client = Arc::clone(&self.manga_provider);
+        let config = MangaTuiConfig::get();
+
+        let mut chapters_to_download: Vec<Chapter> = self.selected_chapters.values().cloned().collect();
+        chapters_to_download.sort_by(|a, b| {
+            let num_a = a.chapter_number.parse::<f64>().unwrap_or(0.0);
+            let num_b = b.chapter_number.parse::<f64>().unwrap_or(0.0);
+            num_a.partial_cmp(&num_b).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        self.tasks.spawn(download_selected_chapters(DownloadSelectedChapters {
+            client,
+            manga_id,
+            manga_id_safe_for_download,
+            manga_title,
+            lang,
+            chapters: chapters_to_download,
+            config: config.clone(),
+            tx,
+        }));
     }
 
     fn scroll_language_down(&mut self) {
@@ -869,7 +990,12 @@ where
 
                 list_state.select(Some(0));
 
-                let chapter_widget = ChaptersListWidget::from_response(response.chapters);
+                let mut chapter_widget = ChaptersListWidget::from_response(response.chapters);
+                for item in chapter_widget.chapters.iter_mut() {
+                    if self.selected_chapters.contains_key(&item.chapter.id) {
+                        item.is_selected = true;
+                    }
+                }
 
                 let chapters = match &self.chapters {
                     Some(chapters) => Some(ChaptersData {
@@ -941,6 +1067,7 @@ where
     }
 
     fn finish_download_all_chapters(&mut self) {
+        self.clear_selected_chapters();
         self.download_all_chapters_state.reset();
         self.state = PageState::DisplayingChapters;
         self.local_event_tx.send(MangaPageEvents::CheckChapterStatus).ok();
@@ -951,6 +1078,7 @@ where
     }
 
     fn abort_download_all_chapters(&mut self) {
+        self.clear_selected_chapters();
         self.download_all_chapters_state.abort_proccess();
         self.tasks.abort_all();
         self.local_event_tx.send(MangaPageEvents::CheckChapterStatus).ok();
@@ -1181,7 +1309,17 @@ where
             MangaPageActions::SearchByLanguage => self.search_by_language(),
             MangaPageActions::CancelDownloadAll => self.cancel_download_all_chapters(),
             MangaPageActions::AskDownloadAllChapters => self.ask_download_all_chapters(),
-            MangaPageActions::ConfirmDownloadAll => self.confirm_download_all_chapters(),
+            MangaPageActions::AskDownloadSelectedChapters => self.ask_download_selected_chapters(),
+            MangaPageActions::ConfirmDownloadAll => {
+                if self.download_all_chapters_state.is_selected_mode {
+                    self.confirm_download_selected_chapters();
+                } else {
+                    self.confirm_download_all_chapters();
+                }
+            },
+            MangaPageActions::ToggleSelectChapter => self.toggle_select_current_chapter(),
+            MangaPageActions::ToggleSelectAllCurrentPage => self.toggle_select_all_current_page(),
+            MangaPageActions::ClearSelectedChapters => self.clear_selected_chapters(),
             MangaPageActions::SearchPreviousChapterPage => self.search_previous_chapters(),
             MangaPageActions::SearchNextChapterPage => self.search_next_chapters(),
             MangaPageActions::ScrollDownAvailbleLanguages => self.scroll_language_down(),
@@ -1836,5 +1974,98 @@ mod test {
                 manga_page.render(page_area, f);
             })
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_chapter_selection_key_events() {
+        let mut manga_page: MangaPage<MockMangaPageProvider, TrackerTest> =
+            MangaPage::new(Manga::default(), None, MockMangaPageProvider::new().into());
+
+        // Press Space -> ToggleSelectChapter
+        press_key(&mut manga_page, KeyCode::Char(' '));
+        let action = manga_page.local_action_rx.recv().await.unwrap();
+        assert_eq!(MangaPageActions::ToggleSelectChapter, action);
+
+        // Press v -> ToggleSelectAllCurrentPage
+        press_key(&mut manga_page, KeyCode::Char('v'));
+        let action = manga_page.local_action_rx.recv().await.unwrap();
+        assert_eq!(MangaPageActions::ToggleSelectAllCurrentPage, action);
+
+        // Press c -> ClearSelectedChapters
+        press_key(&mut manga_page, KeyCode::Char('c'));
+        let action = manga_page.local_action_rx.recv().await.unwrap();
+        assert_eq!(MangaPageActions::ClearSelectedChapters, action);
+
+        // When no chapters are selected, pressing d triggers single chapter download
+        press_key(&mut manga_page, KeyCode::Char('d'));
+        let action = manga_page.local_action_rx.recv().await.unwrap();
+        assert_eq!(MangaPageActions::DownloadChapter, action);
+
+        // Simulate selected chapter
+        manga_page.selected_chapters.insert("chap_1".to_string(), Chapter::default());
+
+        // When chapters are selected, pressing d triggers AskDownloadSelectedChapters
+        press_key(&mut manga_page, KeyCode::Char('d'));
+        let action = manga_page.local_action_rx.recv().await.unwrap();
+        assert_eq!(MangaPageActions::AskDownloadSelectedChapters, action);
+    }
+
+    #[test]
+    fn test_chapter_selection_logic() {
+        let mut manga_page: MangaPage<MockMangaPageProvider, TrackerTest> =
+            MangaPage::new(Manga::default(), None, MockMangaPageProvider::new().into());
+
+        let ch1 = Chapter {
+            id: "id_1".to_string(),
+            chapter_number: "1".to_string(),
+            ..Default::default()
+        };
+        let ch2 = Chapter {
+            id: "id_2".to_string(),
+            chapter_number: "2".to_string(),
+            ..Default::default()
+        };
+
+        manga_page.load_chapters(Some(GetChaptersResponse {
+            chapters: vec![ch1, ch2],
+            total_chapters: 2,
+        }));
+        render_chapters(&mut manga_page);
+
+        assert_eq!(0, manga_page.selected_chapters.len());
+
+        // Select first chapter
+        manga_page.toggle_select_current_chapter();
+        assert_eq!(1, manga_page.selected_chapters.len());
+        assert!(manga_page.selected_chapters.contains_key("id_1"));
+        // Cursor should have advanced to index 1
+        assert_eq!(1, manga_page.get_index_chapter_selected());
+
+        // Select second chapter
+        manga_page.toggle_select_current_chapter();
+        assert_eq!(2, manga_page.selected_chapters.len());
+        assert!(manga_page.selected_chapters.contains_key("id_2"));
+
+        // Ask download selected chapters
+        manga_page.ask_download_selected_chapters();
+        assert!(manga_page.download_all_chapters_state.is_selected_mode);
+        assert_eq!(DownloadPhase::Asking, manga_page.download_all_chapters_state.phase);
+        assert_eq!(2.0, manga_page.download_all_chapters_state.total_chapters);
+
+        // Cancel
+        manga_page.cancel_download_all_chapters();
+        assert_eq!(DownloadPhase::ProccessNotStarted, manga_page.download_all_chapters_state.phase);
+
+        // Clear selection
+        manga_page.clear_selected_chapters();
+        assert_eq!(0, manga_page.selected_chapters.len());
+
+        // Toggle all on page
+        manga_page.toggle_select_all_current_page();
+        assert_eq!(2, manga_page.selected_chapters.len());
+
+        // Toggle all again deselects all
+        manga_page.toggle_select_all_current_page();
+        assert_eq!(0, manga_page.selected_chapters.len());
     }
 }
